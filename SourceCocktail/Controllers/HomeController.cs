@@ -26,5 +26,9 @@ namespace SourceCocktail.Controllers
 
             return View();
         }
+        public ActionResult Cocktail()
+        {
+            return View();
+        }
     }
 }

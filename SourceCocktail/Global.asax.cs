@@ -17,5 +17,10 @@ namespace SourceCocktail
             RouteConfig.RegisterRoutes(RouteTable.Routes);
             BundleConfig.RegisterBundles(BundleTable.Bundles);
         }
+        protected void Session_Start()
+        {
+            String DB_Path = Server.MapPath(@"~\App_Data\Database.mdf");
+            Session["DB"] = @"Data Source=(LocalDB)\v11.0;AttachDbFilename='" + DB_Path + "'; Integrated Security=true; Max Pool Size=1024; Pooling=true;";
+        }
     }
 }
