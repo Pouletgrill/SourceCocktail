@@ -13,10 +13,42 @@ namespace SqlExpressUtilities
     ////////////////////////////////////////////////////////////////////////////////////////////////////
     // Cette classe offre une interface conviviale au programmeur utilisateur pour des transactions SQL
     // avec une table d'une base de données SQL Express
-    // Note importante:
+    //
+    // Note importante concernant les tables:
     // Afin de profiter des toutes les fonctionnalités de cette classe
     // assurez-vous que le premier champ soit Id de type BigInt INDETITY(1,1) dans la structure des 
     // tables visées
+    //
+    // Note importante concernant les sous-classes directes:
+    //
+    //  Le premier attribut de la sous-classe doit être du format suivant
+    //
+    //
+    //  public class Enregistrement
+    //  {
+    //      public long Id {get; set;}
+    //      public Type Nom_Champ_1 {get; set;}
+    //      public Type Nom_Champ_2 {get; set;}
+    //      ...
+    //      public Type Nom_Champ_n {get; set;}
+    //
+    //      public Enregistrement() {}
+    //  }
+    //
+    //  public class Nom_de_la_table : SQLExpressWrapper
+    //  {
+    //      public Enregistrement Enregistrement {get; set;}
+    //
+    //      public Nom_de_la_Table(String chaine_de_connection) : base( chaine_de_connection)
+    //      {
+    //          Enregistrement = new Enregistrement();
+    //      }    
+    //
+    //      public Nom_de_la_Table()
+    //      {
+    //          Enregistrement = new Enregistrement();
+    //      }    
+    //
     ////////////////////////////////////////////////////////////////////////////////////////////////////
     // Auteur : Nicolas Chourot (Tous droits réservés)
     // Départment d'informatique
@@ -45,13 +77,17 @@ namespace SqlExpressUtilities
             this.connexionString = connexionString.ToString();
             SQLTableName = this.GetType().Name;
         }
+        public SqlExpressWrapper()
+        {
+        }
 
         public void SetTableName(String tableName)
         {
             SQLTableName = tableName;
+
         }
 
-        public int ColumnIndex(string columnName)
+        public int ReaderColumnIndex(string columnName)
         {
             for (int i = 0; i < reader.FieldCount; i++)
             {
@@ -63,34 +99,35 @@ namespace SqlExpressUtilities
             return -1;
         }
 
-        public Type ColumnType(string columnName)
+        public Type ReaderColumnType(string columnName)
         {
-            int columnIndex = ColumnIndex(columnName);
+            int columnIndex = ReaderColumnIndex(columnName);
             if (columnIndex > -1)
                 return reader.GetFieldType(columnIndex);
             else
                 return null;
         }
 
-        public Object ColumnValue(string columnName)
+        public Object ReaderColumnValue(string columnName)
         {
-            int columnIndex = ColumnIndex(columnName);
+            int columnIndex = ReaderColumnIndex(columnName);
             if (columnIndex > -1)
-                    return SQLHelper.ConvertValueFromSQLToMember(reader.GetValue(columnIndex));
+                return SQLHelper.ConvertValueFromSQLToMember(reader.GetValue(columnIndex));
             else
                 return null;
         }
 
-        // Cette méthode utilise "Reflection" pour extraire les membres de type attribut de la sous-classe
-        // un enfant direct de la classe SqlExpressWrapper
-        // et ainsi affecter leur valeur
+        // Cette méthode utilise "Reflection" pour extraire les membres de type attribut du premier attribut de la sous-classe
+        //  directe de la classe SqlExpressWrapper et ainsi affecter leur valeur avec celles du datareader
         // 
-        public void GetValues()
+        public void GetReaderValues()
         {
             // obtenir le type de la sous-classe
             Type type = this.GetType();
             // Extraire la liste des membres
-            PropertyInfo[] properties = type.GetProperties();
+            PropertyInfo first_attribute_properties = type.GetProperties()[0];
+            object first_attribute = first_attribute_properties.GetValue(this, null);
+            PropertyInfo[] properties = first_attribute.GetType().GetProperties();
             // Parcourrir la liste des membres
             for (int i = 0; i < properties.Length; i++)
             {
@@ -101,13 +138,55 @@ namespace SqlExpressUtilities
 
                     // vérifier qu'il y a un champ de la table qui porte le même nom que l'attribut
                     // avant de lui attribuer sa valeur
-                    if (ColumnIndex(memberName) > -1)
-                        properties[i].SetValue(this, ColumnValue(memberName), null);
+                    if (ReaderColumnIndex(memberName) > -1)
+                    {
+                        var value = ReaderColumnValue(memberName);
+                        String typeValue = value.GetType().ToString();
+                        if (typeValue != "System.DBNull")
+                            properties[i].SetValue(first_attribute, value, null);
+                        else
+                            properties[i].SetValue(first_attribute, null, null);
+                    }
                 }
             }
         }
 
-        // Extraire les valeur des champs de l'enregistrement suivant du lecteur Reader
+
+        // retourne le clone du premier attribut de la sous-classe directe
+        public object Clone()
+        {
+            Type type = this.GetType();
+            PropertyInfo first_attribute_properties = type.GetProperties()[0];
+            object first_attribute = first_attribute_properties.GetValue(this, null);
+            Object copy = Activator.CreateInstance(first_attribute.GetType());
+
+            PropertyInfo[] source_properties = first_attribute.GetType().GetProperties();
+            PropertyInfo[] copy_properties = copy.GetType().GetProperties();
+
+            for (int i = 0; i < source_properties.Length; i++)
+            {
+                // vérifier que le membre d'index i est un attribut
+                if (source_properties[i].GetIndexParameters().GetLength(0) == 0)
+                {
+                    copy_properties[i].SetValue(copy, source_properties[i].GetValue(first_attribute, null), null);
+                }
+            }
+            return copy;
+        }
+
+
+        // Retourne la liste de tous les enregistrements du datareader "reader"
+        public List<object> RecordsList()
+        {
+            List<object> list = new List<object>();
+            while (Next())
+            {
+                list.Add(Clone());
+            }
+            return list;
+        }
+
+        // Extraire les valeurs des champs de l'enregistrement suivant du lecteur Reader
         bool GetfieldsValues()
         {
             bool NotEndOfReader = false;
@@ -115,7 +194,7 @@ namespace SqlExpressUtilities
             // si il reste des enregistrements à lire
             if (NotEndOfReader = reader.Read())
             {
-                GetValues();
+                GetReaderValues();
             }
             return NotEndOfReader;
         }
@@ -130,14 +209,18 @@ namespace SqlExpressUtilities
         // Saisir les valeurs du prochain enregistrement du Reader
         public bool Next()
         {
-            bool more = NextRecord();
-            if (!more)
-                EndQuerySQL();
-            return more;
+            if (reader != null)
+            {
+                bool more = NextRecord();
+                if (!more)
+                    EndQuerySQL();
+                return more;
+            }
+            return false;
         }
 
         // Exécuter une commande SQL
-        public int QuerySQL(string sqlCommand)
+        public void QuerySQL(string sqlCommand)
         {
             // instancier l'objet de collection
             if (SQLTableName != "")
@@ -150,33 +233,26 @@ namespace SqlExpressUtilities
                         // bâtir l'objet de requête
                         SqlCommand sqlcmd = new SqlCommand(sqlCommand);
                         // affecter l'objet de connection à l'objet de requête
-
                         sqlcmd.Connection = connection;
                         // ouvrir la connection avec la bd
                         connection.Open();
                         // éxécuter la requête SQL et récupérer les enregistrements qui en découlent dans l'objet Reader
                         reader = sqlcmd.ExecuteReader();
-
-                        // retourner le nombre d'enregistrements générés
-                        return reader.RecordsAffected;
+                        if (!reader.HasRows)
+                            EndQuerySQL();
                     }
                     catch (Exception ex)
                     {
                         // Todo - rapport d'erreur
                         EndQuerySQL();
-                        return 0;
                     }
                 }
                 catch (Exception ex)
                 {
                     // Todo - rapport d'erreur
                     EndQuerySQL();
-                    return 0;
                 }
-
             }
-            else return 0;
-
         }
 
         // Conclure la dernière requête
@@ -189,7 +265,9 @@ namespace SqlExpressUtilities
                 {
                     connection.Close();
                     connection.Dispose();
+                    reader.Dispose();
                     connection = null;
+                    reader = null;
                 }
             }
         }
@@ -215,33 +293,30 @@ namespace SqlExpressUtilities
                 }
             }
         }
-        
+
         // Extraire tous les enregistrements
-        public virtual bool SelectAll(string orderBy = "")
+        public virtual void SelectAll(string orderBy = "")
         {
             string sql = "SELECT * FROM " + SQLTableName;
             if (orderBy != "")
                 sql += " ORDER BY " + orderBy;
             QuerySQL(sql);
-            bool hadRow = reader.HasRows;
-            if (hadRow)
-                Next();
-            else
-                EndQuerySQL();
-            return reader.HasRows;
         }
-
+        public bool SelectByID(long ID)
+        {
+            return SelectByID(ID.ToString());
+        }
         // Extraire l'enregistrement d'id ID
         public bool SelectByID(String ID)
         {
             string sql = "SELECT * FROM " + SQLTableName + " WHERE ID = " + ID;
             QuerySQL(sql);
-            bool hadRow = reader.HasRows;
-            if (hadRow)
+            if (reader != null)
+            {
                 Next();
-            else
-                EndQuerySQL();
-            return hadRow;
+                return true;
+            }
+            return false;
         }
 
         public bool SelectLast()
@@ -249,33 +324,24 @@ namespace SqlExpressUtilities
             string sql = "SELECT TOP 1 * FROM " + SQLTableName + " ORDER BY ID DESC";
             //SELECT TOP 1 column_name FROM table_name ORDER BY column_name DESC;
             QuerySQL(sql);
-            bool hadRow = reader.HasRows;
-            if (hadRow)
+            if (reader != null)
+            {
                 Next();
-            else
-                EndQuerySQL();
-            return hadRow;
+                return true;
+            }
+            return false;
         }
 
-        public bool SelectByFieldName(String FieldName, object value, String orderBy = "")
+        public void SelectByFieldName(String FieldName, object value, String orderBy = "")
         {
             string SQL = "SELECT * FROM " + SQLTableName + " WHERE " + FieldName + " = " + SQLHelper.ConvertValueFromMemberToSQL(value);
 
             if (orderBy != "") SQL += " ORDER BY " + orderBy;
 
             QuerySQL(SQL);
-
-            bool hadRow = reader.HasRows;
-
-            if (hadRow)
-                Next();
-            else
-                EndQuerySQL();
-
-            return hadRow;
         }
 
-        public bool SelectPeriod(String DateTimeFieldName, DateTime min, DateTime max, String orderBy = "")
+        public void SelectPeriod(String DateTimeFieldName, DateTime min, DateTime max, String orderBy = "")
         {
             String start = SQLHelper.DateSQLFormat((DateTime)min);
             String End = SQLHelper.DateSQLFormat((DateTime)max);
@@ -283,17 +349,7 @@ namespace SqlExpressUtilities
 
             if (orderBy != "")
                 SQL += " ORDER BY " + orderBy;
-
             QuerySQL(SQL);
-
-            bool hadRow = reader.HasRows;
-
-            if (hadRow)
-                Next();
-            else
-                EndQuerySQL();
-
-            return hadRow;
         }
 
         // Insérer un nouvel enregistrement
@@ -307,8 +363,11 @@ namespace SqlExpressUtilities
         {
             string SQL = "INSERT INTO " + SQLTableName + "(";
             Type type = this.GetType();
-            // Extraire la liste des membres
-            PropertyInfo[] properties = type.GetProperties();
+            // Extraire la liste des membres du premier attribut de la sous-classe directe
+            PropertyInfo first_attribute_properties = type.GetProperties()[0];
+            object first_attribute = first_attribute_properties.GetValue(this, null);
+            PropertyInfo[] properties = first_attribute.GetType().GetProperties();
+
             // Parcourrir la liste des membres
             int i;
             for (i = 1; i < properties.Length; i++)
@@ -328,14 +387,14 @@ namespace SqlExpressUtilities
                 // vérifier que le membre d'index i est un attribut
                 if (properties[i].GetIndexParameters().GetLength(0) == 0)
                 {
-                    SQL += SQLHelper.ConvertValueFromMemberToSQL(properties[i].GetValue(this, null)) + ", ";
+                    SQL += SQLHelper.ConvertValueFromMemberToSQL(properties[i].GetValue(first_attribute, null)) + ", ";
                 }
             }
             SQL = SQL.Remove(SQL.LastIndexOf(", "), 2);
             SQL += ")";
             NonQuerySQL(SQL);
         }
-        
+
         // Mise à jour de l'enregistrement
         public virtual void Update()
         {
@@ -344,26 +403,28 @@ namespace SqlExpressUtilities
 
         // Met à jour de l'enregistrement courant par le biais des valeurs inscrites dans la liste
         // FieldsValues
-        // IMPORTANT: le premier membre de la sous-classe doit s'appeler Id et être de type long
+        // IMPORTANT: le premier membre du premier attribut de la sous-classe directe doit s'appeler Id et être de type long
         public int UpdateRecord()
         {
             String SQL = "UPDATE " + SQLTableName + " ";
             SQL += "SET ";
             // obtenir le type de la sous-classe
             Type type = this.GetType();
-            // Extraire la liste des membres
-            PropertyInfo[] properties = type.GetProperties();
+            // Extraire la liste des membres du premier attribut de la sous-classe directe
+            PropertyInfo first_attribute_properties = type.GetProperties()[0];
+            object first_attribute = first_attribute_properties.GetValue(this, null);
+            PropertyInfo[] properties = first_attribute.GetType().GetProperties();
             // parcourrir la liste après le champ Id
             for (int i = 1; i < properties.Length; i++)
             {
                 if (properties[i].GetIndexParameters().GetLength(0) == 0)
                 {
-                    SQL += "[" + properties[i].Name + "] = " + SQLHelper.ConvertValueFromMemberToSQL(properties[i].GetValue(this, null)) + ", ";
+                    SQL += "[" + properties[i].Name + "] = " + SQLHelper.ConvertValueFromMemberToSQL(properties[i].GetValue(first_attribute, null)) + ", ";
                 }
             }
             SQL = SQL.Remove(SQL.LastIndexOf(", "), 2);
             // Id
-            SQL += " WHERE [" + properties[0].Name + "] = " + SQLHelper.ConvertValueFromMemberToSQL(properties[0].GetValue(this, null));
+            SQL += " WHERE [" + properties[0].Name + "] = " + SQLHelper.ConvertValueFromMemberToSQL(properties[0].GetValue(first_attribute, null));
 
             return NonQuerySQL(SQL);
         }
@@ -456,7 +517,7 @@ namespace SqlExpressUtilities
             String Sql_value = "";
             if (memberValue != null)
             {
-                
+
                 if (SQLHelper.IsNumericType(memberValue.GetType()))
                 {
                     if (memberValue.GetType().IsEnum)
